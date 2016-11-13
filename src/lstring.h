@@ -12,6 +12,7 @@
 #include "lstate.h"
 
 
+// 一个长字串类型的 TString 要占多大的内存，首先 UTString 作为TString对其头部本身大小，l+1个char长度是字串长l，还有个0结尾
 #define sizelstring(l)  (sizeof(union UTString) + ((l) + 1) * sizeof(char))
 
 #define sizeludata(l)	(sizeof(union UUdata) + (l))
@@ -29,6 +30,7 @@
 
 /*
 ** equality for short strings, which are always internalized
+** 短字符串被内部优化了的，同一字符串一定公用同一内存，所以直接比较地址即可
 */
 #define eqshrstr(a,b)	check_exp((a)->tt == LUA_TSHRSTR, (a) == (b))
 

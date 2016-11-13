@@ -50,8 +50,8 @@
 
 
 /* Variant tags for strings */
-#define LUA_TSHRSTR	(LUA_TSTRING | (0 << 4))  /* short strings */
-#define LUA_TLNGSTR	(LUA_TSTRING | (1 << 4))  /* long strings */
+#define LUA_TSHRSTR	(LUA_TSTRING | (0 << 4))  /* short strings */ // 标记短字符串
+#define LUA_TLNGSTR	(LUA_TSTRING | (1 << 4))  /* long strings */  // 标记长字符串
 
 
 /* Variant tags for numbers */
@@ -109,6 +109,22 @@ typedef union Value {
 
 #define TValuefields	Value value_; int tt_
 
+/*
+两个区段：
+    1. value_ 内联体，里面概括了lua里所用到的所有的类型的C语言表示法。里面所有的成员不是指针就是普通32位基本数据类型，所以这个内联的sizeof应该等于机器字长
+    2. tt_  类型标识，用位标记来标示其在lua里是什么类型
+typedef struct lua_TValue {
+    union Value {
+      GCObject *gc;    // collectable objects
+      void *p;         // light userdata
+      int b;           // booleans
+      lua_CFunction f; // light C functions
+      lua_Integer i;   // integer numbers
+      lua_Number n;    // float numbers
+    }       value_;
+    int     tt_;
+} TValue;
+*/
 
 typedef struct lua_TValue {
   TValuefields;
@@ -117,18 +133,24 @@ typedef struct lua_TValue {
 
 
 /* macro defining a nil value */
+// 实际上用来初始化TValue类型的，这个类型的前一个是一个union，后一个是一个标记类型的整数定义
+// 展开为:  value_ = {NULL}, tt_ = LUA_TNIL, 内联体如前面那样赋值的话，默认就是给第一个成员赋值
 #define NILCONSTANT	{NULL}, LUA_TNIL
 
 
+// o被设想为TValue类型，这个宏就是为了访问TValue.value_成员
 #define val_(o)		((o)->value_)
 
 
 /* raw type tag of a TValue */
+// o被设想为TValue类型，这个宏就是为了访问TValue.tt_成员
 #define rttype(o)	((o)->tt_)
 
+// 只取 0~3 位
 /* tag with no variants (bits 0-3) */
 #define novariant(x)	((x) & 0x0F)
 
+// 除了 0~3 位，同时包含上 4~5 位
 /* type tag of a TValue (bits 0-3 for tags + variant bits 4-5) */
 #define ttype(o)	(rttype(o) & 0x3F)
 
@@ -136,8 +158,10 @@ typedef struct lua_TValue {
 #define ttnov(o)	(novariant(rttype(o)))
 
 
-/* Macros to test type */
+/* Macros to test type 主要用来检查tt_类型标记 */
+// 比较整个tt_，包含 variant 位
 #define checktag(o,t)		(rttype(o) == (t))
+// 只比较 0~3 位, 只是基础位
 #define checktype(o,t)		(ttnov(o) == (t))
 #define ttisnumber(o)		checktype((o), LUA_TNUMBER)
 #define ttisfloat(o)		checktag((o), LUA_TNUMFLT)
@@ -160,18 +184,23 @@ typedef struct lua_TValue {
 
 
 /* Macros to access values */
+// 不同的数据类型对应 TValue内联体里的各个成员，这里就是根据请求的数据类型不同访问 TValue.value_ 里的不同成员
+// check_exp 第一个参数在开发阶段是一个assert条件，发布后就被放空, 第二个参数返回TValue.value_里指定成员
 #define ivalue(o)	check_exp(ttisinteger(o), val_(o).i)
 #define fltvalue(o)	check_exp(ttisfloat(o), val_(o).n)
+// 是整数就强转成float，其他就直接返回float
 #define nvalue(o)	check_exp(ttisnumber(o), \
 	(ttisinteger(o) ? cast_num(ivalue(o)) : fltvalue(o)))
 #define gcvalue(o)	check_exp(iscollectable(o), val_(o).gc)
 #define pvalue(o)	check_exp(ttislightuserdata(o), val_(o).p)
+// 把一个个的 gc object 转换成 指定的 TValue->value_
 #define tsvalue(o)	check_exp(ttisstring(o), gco2ts(val_(o).gc))
 #define uvalue(o)	check_exp(ttisfulluserdata(o), gco2u(val_(o).gc))
 #define clvalue(o)	check_exp(ttisclosure(o), gco2cl(val_(o).gc))
 #define clLvalue(o)	check_exp(ttisLclosure(o), gco2lcl(val_(o).gc))
 #define clCvalue(o)	check_exp(ttisCclosure(o), gco2ccl(val_(o).gc))
 #define fvalue(o)	check_exp(ttislcf(o), val_(o).f)
+// GCUnion 里的table类型成员名字是h
 #define hvalue(o)	check_exp(ttistable(o), gco2t(val_(o).gc))
 #define bvalue(o)	check_exp(ttisboolean(o), val_(o).b)
 #define thvalue(o)	check_exp(ttisthread(o), gco2th(val_(o).gc))
@@ -302,6 +331,7 @@ typedef TValue *StkId;  /* index to stack elements */
 */
 typedef struct TString {
   CommonHeader;
+  // 对于短字符串 extra 用来标记这个字符串是否为保留关键字，这个标记用于词法分析器对保留字的快速判断。对于长字符串，0的话表示该TString还没有求过hash，1的话表示已经求过了
   lu_byte extra;  /* reserved words for short strings; "has hash" for longs */
   lu_byte shrlen;  /* length for short strings */
   unsigned int hash;
@@ -316,7 +346,7 @@ typedef struct TString {
 ** Ensures that address after this type is always fully aligned.
 */
 typedef union UTString {
-  L_Umaxalign dummy;  /* ensures maximum alignment for strings */
+  L_Umaxalign dummy;  /* ensures maximum alignment for strings */ // 最长对齐字节，用于帮助TString补齐对齐的字节数
   TString tsv;
 } UTString;
 
@@ -325,6 +355,7 @@ typedef union UTString {
 ** Get the actual string (array of bytes) from a 'TString'.
 ** (Access to 'extra' ensures that value is really a 'TString'.)
 */
+// 对一个TSring指针开始向后便宜 sizeof( UTSTRING ) 再加上点 L_Umaxalign 对齐字节要求数，就获得了存储的字串真正的位置
 #define getstr(ts)  \
   check_exp(sizeof((ts)->extra), cast(char *, (ts)) + sizeof(UTString))
 
@@ -342,6 +373,7 @@ typedef union UTString {
 /*
 ** Header for userdata; memory area follows the end of this structure
 ** (aligned according to 'UUdata'; see next).
+** Udata对应前面的TString  UUdata对应前面的UTSring 实现原理一样
 */
 typedef struct Udata {
   CommonHeader;
@@ -472,11 +504,14 @@ typedef union Closure {
 ** Tables
 */
 
+// TKey是一个内连体，第一个数据部分是一个struct，第二个部分是TValue，但是相比较而言前后者相比，只是前者多了个int next;
 typedef union TKey {
   struct {
+    // #define TValuefields	Value value_; int tt_
     TValuefields;
     int next;  /* for chaining (offset for next node) */
   } nk;
+  // typedef struct lua_TValue { TValuefields; } TValue;
   TValue tvk;
 } TKey;
 
@@ -488,6 +523,7 @@ typedef union TKey {
 	  (void)L; checkliveness(L,io_); }
 
 
+// 一个key一个value
 typedef struct Node {
   TValue i_val;
   TKey i_key;
@@ -497,8 +533,10 @@ typedef struct Node {
 typedef struct Table {
   CommonHeader;
   lu_byte flags;  /* 1<<p means tagmethod(p) is not present */
-  lu_byte lsizenode;  /* log2 of size of 'node' array */
-  unsigned int sizearray;  /* size of 'array' array */
+  lu_byte lsizenode;  /* log2 of size of 'node' array */ // lsizenode = log2(nodearraysize) 也就是二的lsizenode次方是哈希表的长度
+  unsigned int sizearray;  /* size of 'array' array */  // 数组部分的长度，开始的地址就是下面的array
+  // table的数据部分分为两部分存储，数组部分和哈希表部分
+  // 下面的array是数组部分的开始地址，node则是hash的开始地址
   TValue *array;  /* array part */
   Node *node;
   Node *lastfree;  /* any free position is before this position */

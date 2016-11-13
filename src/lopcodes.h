@@ -86,11 +86,15 @@ enum OpMode {iABC, iABx, iAsBx, iAx};  /* basic instruction format */
 ** the following macros help to manipulate instructions
 */
 
+// i & 0x0000003F = opcode
 #define GET_OPCODE(i)	(cast(OpCode, ((i)>>POS_OP) & MASK1(SIZE_OP,0)))
+// 只修改i的opcode所在的6位，其他位保持不变
 #define SET_OPCODE(i,o)	((i) = (((i)&MASK0(SIZE_OP,POS_OP)) | \
 		((cast(Instruction, o)<<POS_OP)&MASK1(SIZE_OP,POS_OP))))
 
+// 从i中取出pos开始的size位二进制所表示的值
 #define getarg(i,pos,size)	(cast(int, ((i)>>pos) & MASK1(size,0)))
+// 从v中取出pos开始的size位，赋值到i的对应二进制位 
 #define setarg(i,v,pos,size)	((i) = (((i)&MASK0(size,pos)) | \
                 ((cast(Instruction, v)<<pos)&MASK1(size,pos))))
 

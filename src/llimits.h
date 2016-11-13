@@ -60,10 +60,12 @@ typedef unsigned char lu_byte;
 
 
 
+// 最长对齐字节，这里在没有定义宏的情况下，默认是用union来计算
 /* type to ensure maximum alignment */
 #if defined(LUAI_USER_ALIGNMENT_T)
 typedef LUAI_USER_ALIGNMENT_T L_Umaxalign;
 #else
+// 这里把lua里用到的所有数据类型解雇都在union里列出来，就可以算出在lua里的一个简单结构，最长对齐字节要求
 typedef union {
   lua_Number n;
   double u;
@@ -81,11 +83,13 @@ typedef LUAI_UACINT l_uacInt;
 
 
 /* internal assertions for in-house debugging */
+// 这个宏应该是在开发阶段，被宏定义成C语言标准的assert吧
 #if defined(lua_assert)
 #define check_exp(c,e)		(lua_assert(c), (e))
 /* to avoid problems with conditions too long */
 #define lua_longassert(c)	((c) ? (void)0 : lua_assert(0))
 #else
+// 发布后，所有的assert都被定义成空
 #define lua_assert(c)		((void)0)
 #define check_exp(c,e)		(e)
 #define lua_longassert(c)	((void)0)

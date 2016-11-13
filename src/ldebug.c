@@ -643,6 +643,7 @@ l_noret luaG_runerror (lua_State *L, const char *fmt, ...) {
 }
 
 
+// 根据hook类型不同调用不同回调函数
 void luaG_traceexec (lua_State *L) {
   CallInfo *ci = L->ci;
   lu_byte mask = L->hookmask;

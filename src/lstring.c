@@ -28,6 +28,7 @@
 /*
 ** Lua will use at most ~(2^LUAI_HASHLIMIT) bytes from a string to
 ** compute its hash
+** 
 */
 #if !defined(LUAI_HASHLIMIT)
 #define LUAI_HASHLIMIT		5
@@ -40,12 +41,13 @@
 int luaS_eqlngstr (TString *a, TString *b) {
   size_t len = a->u.lnglen;
   lua_assert(a->tt == LUA_TLNGSTR && b->tt == LUA_TLNGSTR);
-  return (a == b) ||  /* same instance or... */
-    ((len == b->u.lnglen) &&  /* equal length and ... */
-     (memcmp(getstr(a), getstr(b), len) == 0));  /* equal contents */
+  return (a == b) ||  /* same instance or... */ // 如果它们本来就指向同一个实例化对象那直接返回1
+    ((len == b->u.lnglen) &&  /* equal length and ... */  
+     (memcmp(getstr(a), getstr(b), len) == 0));  /* equal contents */  // 一样长并且比对一样，返回1，否则返回0
 }
 
 
+// 给字符串算hash的函数
 unsigned int luaS_hash (const char *str, size_t l, unsigned int seed) {
   unsigned int h = seed ^ cast(unsigned int, l);
   size_t step = (l >> LUAI_HASHLIMIT) + 1;
@@ -55,6 +57,8 @@ unsigned int luaS_hash (const char *str, size_t l, unsigned int seed) {
 }
 
 
+// 检查extra，如果是0说明没算过，要算一次
+//            如果是1说明算过了，直接返回
 unsigned int luaS_hashlongstr (TString *ts) {
   lua_assert(ts->tt == LUA_TLNGSTR);
   if (ts->extra == 0) {  /* no hash? */
@@ -100,6 +104,7 @@ void luaS_resize (lua_State *L, int newsize) {
 ** Clear API string cache. (Entries cannot be empty, so fill them with
 ** a non-collectable string.)
 */
+// 这个strcache好像是用于对元方法字串等优化查找的
 void luaS_clearcache (global_State *g) {
   int i, j;
   for (i = 0; i < STRCACHE_N; i++)
@@ -135,10 +140,12 @@ static TString *createstrobj (lua_State *L, size_t l, int tag, unsigned int h) {
   GCObject *o;
   size_t totalsize;  /* total size of TString object */
   totalsize = sizelstring(l);
+  // 创建一个垃圾回收对象
   o = luaC_newobj(L, tag, totalsize);
   ts = gco2ts(o);
-  ts->hash = h;
-  ts->extra = 0;
+  ts->hash = h; // 长字串真正的hash采用惰性计算，这里赋值给ta的是一个用于之后计算hash的seed
+  ts->extra = 0; // 标记表示没有计算hash
+  // 字串尾巴上补个0结束
   getstr(ts)[l] = '\0';  /* ending 0 */
   return ts;
 }
@@ -151,6 +158,7 @@ TString *luaS_createlngstrobj (lua_State *L, size_t l) {
 }
 
 
+// 根据hash值从全局stringtable里，把对应的TString对象从hash链里断掉
 void luaS_remove (lua_State *L, TString *ts) {
   stringtable *tb = &G(L)->strt;
   TString **p = &tb->hash[lmod(ts->hash, tb->size)];
@@ -163,29 +171,40 @@ void luaS_remove (lua_State *L, TString *ts) {
 
 /*
 ** checks whether short string exists and reuses it or creates a new one
+** 短字串都是放在全局hash表里的
 */
 static TString *internshrstr (lua_State *L, const char *str, size_t l) {
   TString *ts;
   global_State *g = G(L);
+  // 先把hash值算出来
   unsigned int h = luaS_hash(str, l, g->seed);
+  // 根据hash值再进行二次hash，找到该字串应该在那个仓，获得这个仓的list
   TString **list = &g->strt.hash[lmod(h, g->strt.size)];
   lua_assert(str != NULL);  /* otherwise 'memcmp'/'memcpy' are undefined */
   for (ts = *list; ts != NULL; ts = ts->u.hnext) {
     if (l == ts->shrlen &&
         (memcmp(str, getstr(ts), l * sizeof(char)) == 0)) {
+      // 遍历相同hash的已经存在的TString链，看看有没有已经一样的字符串已经存在了
       /* found! */
       if (isdead(g, ts))  /* dead (but not collected yet)? */
+        // 存在一个尸体，本该被垃圾回收的，那正好复用
         changewhite(ts);  /* resurrect it */
-      return ts;
+      return ts; // 无论是真的找到了还是捡了个尸体，都要返回
     }
   }
   if (g->strt.nuse >= g->strt.size && g->strt.size <= MAX_INT/2) {
+    // hash表中的字符串数量 nuse 域超过了预定的size域的时候
+    // 调整resize把字符串表的hash链表数组扩大，重新排列所有字符串的位置
     luaS_resize(L, g->strt.size * 2);
+    // 由于hash表已经扩大重组，这里list重新获取
     list = &g->strt.hash[lmod(h, g->strt.size)];  /* recompute with new size */
   }
+  // 创建TString对象
   ts = createstrobj(L, l, LUA_TSHRSTR, h);
+  // 把实际字串拷给 ts 对象
   memcpy(getstr(ts), str, l * sizeof(char));
   ts->shrlen = cast_byte(l);
+  // 把该 TString 对象串到hash链头去
   ts->u.hnext = *list;
   *list = ts;
   g->strt.nuse++;
@@ -198,11 +217,13 @@ static TString *internshrstr (lua_State *L, const char *str, size_t l) {
 */
 TString *luaS_newlstr (lua_State *L, const char *str, size_t l) {
   if (l <= LUAI_MAXSHORTLEN)  /* short string? */
+    // 默认小于40字节的字串被当成短字串放在一个全局hash表里
     return internshrstr(L, str, l);
   else {
     TString *ts;
     if (l >= (MAX_SIZE - sizeof(TString))/sizeof(char))
       luaM_toobig(L);
+    // 创建长字串 TString 对象，把字串内容拷贝到后面
     ts = luaS_createlngstrobj(L, l);
     memcpy(getstr(ts), str, l * sizeof(char));
     return ts;
@@ -211,8 +232,8 @@ TString *luaS_newlstr (lua_State *L, const char *str, size_t l) {
 
 
 /*
-** Create or reuse a zero-terminated string, first checking in the
-** cache (using the string address as a key). The cache can contain
+** Create or reuse a zero-terminated string, first checking in the // 创建或者reuse一个以\0结尾的字符串，首先用字串地址作为key查找cache
+** cache (using the string address as a key). The cache can contain // 这个cache只用来装\0结尾的字串，所以可以放心的使用strcmp等C调用
 ** only zero-terminated strings, so it is safe to use 'strcmp' to
 ** check hits.
 */
@@ -234,6 +255,7 @@ TString *luaS_new (lua_State *L, const char *str) {
 
 
 Udata *luaS_newudata (lua_State *L, size_t s) {
+  // 等同TString，存储数据和实现与之类似，拥有独立元表不被内部化处理，也不需要追加\0字符串
   Udata *u;
   GCObject *o;
   if (s > MAX_SIZE - sizeof(Udata))

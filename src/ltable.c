@@ -43,6 +43,7 @@
 ** Maximum size of array part (MAXASIZE) is 2^MAXABITS. MAXABITS is
 ** the largest integer such that MAXASIZE fits in an unsigned int.
 */
+// 所以这个MAXABITS是31
 #define MAXABITS	cast_int(sizeof(int) * CHAR_BIT - 1)
 #define MAXASIZE	(1u << MAXABITS)
 
@@ -52,6 +53,7 @@
 ** maximum number of elements in a table, 2^MAXABITS + 2^MAXHBITS, still
 ** fits comfortably in an unsigned int.)
 */
+// hash部分30位
 #define MAXHBITS	(MAXABITS - 1)
 
 
@@ -76,6 +78,7 @@
 
 #define isdummy(n)		((n) == dummynode)
 
+// 这是一个static const的节点，只能被读,指针指向这里了也不能随便乱改
 static const Node dummynode_ = {
   {NILCONSTANT},  /* value */
   {{NILCONSTANT, 0}}  /* key */
@@ -310,16 +313,18 @@ static void setarrayvector (lua_State *L, Table *t, unsigned int size) {
 static void setnodevector (lua_State *L, Table *t, unsigned int size) {
   int lsize;
   if (size == 0) {  /* no elements to hash part? */
+    // 为了减少数据空间的维护成本，空表初始化设置指向这个不可修改的dummynode的只读节点
     t->node = cast(Node *, dummynode);  /* use common 'dummynode' */
     lsize = 0;
   }
   else {
     int i;
     lsize = luaO_ceillog2(size);
-    if (lsize > MAXHBITS)
+    if (lsize > MAXHBITS) // lsize不可以超过30
       luaG_runerror(L, "table overflow");
-    size = twoto(lsize);
+    size = twoto(lsize); // 二进制移位，求得马上要创建的array数组的size
     t->node = luaM_newvector(L, size, Node);
+    // 初始化整个hash node节点
     for (i = 0; i < (int)size; i++) {
       Node *n = gnode(t, i);
       gnext(n) = 0;
@@ -327,7 +332,7 @@ static void setnodevector (lua_State *L, Table *t, unsigned int size) {
       setnilvalue(gval(n));
     }
   }
-  t->lsizenode = cast_byte(lsize);
+  t->lsizenode = cast_byte(lsize); // 为了接受luaO_ceillog2才定义成int的，这里强制转回去
   t->lastfree = gnode(t, size);  /* all positions are free */
 }
 
@@ -405,18 +410,20 @@ Table *luaH_new (lua_State *L) {
   GCObject *o = luaC_newobj(L, LUA_TTABLE, sizeof(Table));
   Table *t = gco2t(o);
   t->metatable = NULL;
-  t->flags = cast_byte(~0);
-  t->array = NULL;
+  t->flags = cast_byte(~0); // 用8个bit来标记前8个TM方法是否存在，这里初始化前8个完全不存在。8个之后的每次都要查
+  t->array = NULL; // 数据部分默认为0，为空
   t->sizearray = 0;
-  setnodevector(L, t, 0);
+  setnodevector(L, t, 0); // hash部分默认为0
   return t;
 }
 
 
 void luaH_free (lua_State *L, Table *t) {
-  if (!isdummy(t->node))
+  // 无论hash部还是数组部，都是连续的数组，所以通过realloc( ptr, 0 ), 收缩掉数据们
+  if (!isdummy(t->node)) // hash部分不是初始的dummy节点，说明不是空hash部
     luaM_freearray(L, t->node, cast(size_t, sizenode(t)));
   luaM_freearray(L, t->array, t->sizearray);
+  // 直接内存层面上释放整个 Table 结构, 整个本来最开始就是realloc出来的
   luaM_free(L, t);
 }
 

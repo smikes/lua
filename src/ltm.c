@@ -123,10 +123,12 @@ void luaT_callTM (lua_State *L, const TValue *f, const TValue *p1,
 
 int luaT_callbinTM (lua_State *L, const TValue *p1, const TValue *p2,
                     StkId res, TMS event) {
+  // 先从第一个参数中找对应event的metatable, 没找到就去第二个找
   const TValue *tm = luaT_gettmbyobj(L, p1, event);  /* try first operand */
   if (ttisnil(tm))
     tm = luaT_gettmbyobj(L, p2, event);  /* try second operand */
   if (ttisnil(tm)) return 0;
+  // 找到了就调用后返回1，没找到返回0
   luaT_callTM(L, tm, p1, p2, res, 1);
   return 1;
 }
@@ -134,7 +136,7 @@ int luaT_callbinTM (lua_State *L, const TValue *p1, const TValue *p2,
 
 void luaT_trybinTM (lua_State *L, const TValue *p1, const TValue *p2,
                     StkId res, TMS event) {
-  if (!luaT_callbinTM(L, p1, p2, res, event)) {
+  if (!luaT_callbinTM(L, p1, p2, res, event)) { // 没在两个参数中找到目标metatable， 进入这里
     switch (event) {
       case TM_CONCAT:
         luaG_concaterror(L, p1, p2);

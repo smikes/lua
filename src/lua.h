@@ -193,6 +193,23 @@ LUA_API const void     *(lua_topointer) (lua_State *L, int idx);
 ** Comparison and arithmetic functions
 */
 
+/*
+    LUA_OPADD:      加法 (+)
+    LUA_OPSUB:      减法 (-)
+    LUA_OPMUL:      乘法 (*)
+    LUA_OPDIV:      浮点除法 (/)
+    LUA_OPIDIV:     向下取整的除法 (//)
+    LUA_OPMOD:      取模 (%)
+    LUA_OPPOW:      乘方 (^)
+    LUA_OPUNM:      取负 (一元 -)
+    LUA_OPBNOT:     按位取反 (~)
+    LUA_OPBAND:     按位与 (&)
+    LUA_OPBOR:      按位或 (|)
+    LUA_OPBXOR:     按位异或 (~)
+    LUA_OPSHL:      左移 (<<)
+    LUA_OPSHR:      右移 (>>)
+*/
+
 #define LUA_OPADD	0	/* ORDER TM, ORDER OP */
 #define LUA_OPSUB	1
 #define LUA_OPMUL	2
@@ -409,10 +426,10 @@ LUA_API void      (lua_setallocf) (lua_State *L, lua_Alloc f, void *ud);
 /*
 ** Event masks
 */
-#define LUA_MASKCALL	(1 << LUA_HOOKCALL)
-#define LUA_MASKRET	(1 << LUA_HOOKRET)
-#define LUA_MASKLINE	(1 << LUA_HOOKLINE)
-#define LUA_MASKCOUNT	(1 << LUA_HOOKCOUNT)
+#define LUA_MASKCALL	(1 << LUA_HOOKCALL)     // LUA_MASKCALL表示每次调用函数的时候hook
+#define LUA_MASKRET	    (1 << LUA_HOOKRET)      // LUA_MASKRET表示每次函数返回的时候hook 
+#define LUA_MASKLINE	(1 << LUA_HOOKLINE)     // LUA_MASKLINE表示每行执行的时候hook
+#define LUA_MASKCOUNT	(1 << LUA_HOOKCOUNT)    // LUA_MASKCOUNT表示每执行count条lua指令hook一次
 
 typedef struct lua_Debug lua_Debug;  /* activation record */
 

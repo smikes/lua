@@ -138,6 +138,7 @@ void luaE_shrinkCI (lua_State *L) {
   CallInfo *ci = L->ci;
   CallInfo *next2;  /* next's next */
   /* while there are two nexts */
+  // 用的next,向后删除的，跳一个删一个，删除二分之一
   while (ci->next != NULL && (next2 = ci->next->next) != NULL) {
     luaM_free(L, ci->next);  /* free next */
     L->nci--;

@@ -162,6 +162,7 @@ void luaV_finishget (lua_State *L, const TValue *t, TValue *key, StkId val,
   int loop;  /* counter to avoid infinite loops */
   const TValue *tm;  /* metamethod */
   for (loop = 0; loop < MAXTAGLOOP; loop++) {
+    // 1. 第一次if 和 else, 一个是slot为NULL一个是slot为nil object,其实无论那种情况都表示 slot 为空，试图获取其 __index metamethod
     if (slot == NULL) {  /* 't' is not a table? */
       lua_assert(!ttistable(t));
       tm = luaT_gettmbyobj(L, t, TM_INDEX);
@@ -178,10 +179,13 @@ void luaV_finishget (lua_State *L, const TValue *t, TValue *key, StkId val,
       }
       /* else will try the metamethod */
     }
+    // 2. tm 是一个function，直接调用ta然后返回
     if (ttisfunction(tm)) {  /* is metamethod a function? */
       luaT_callTM(L, tm, t, key, val, 1);  /* call it */
       return;
     }
+    // 3. tm 另一张table， 直接查询
+    //    如果这一步没有找到，luaV_fastget 又返回nil，则又继续循环。所以为了防止循环嵌套，这里设置最大循环次数是 MAXTAGLOOP
     t = tm;  /* else try to access 'tm[key]' */
     if (luaV_fastget(L,t,key,slot,luaH_get)) {  /* fast track? */
       setobj2s(L, val, slot);  /* done */
@@ -456,6 +460,7 @@ int luaV_equalobj (lua_State *L, const TValue *t1, const TValue *t2) {
 
 #define isemptystr(o)	(ttisshrstring(o) && tsvalue(o)->shrlen == 0)
 
+// 把从 top - n 到 top - 1 的TValue的字串挨着挨着拷贝到buffer里
 /* copy strings in stack from top - n up to top - 1 to buffer */
 static void copy2buff (StkId top, int n, char *buff) {
   size_t tl = 0;  /* size already copied */
@@ -488,6 +493,8 @@ void luaV_concat (lua_State *L, int total) {
       size_t tl = vslen(top - 1);
       TString *ts;
       /* collect total length and number of strings */
+      // total 是指栈上需要被连接的 TValue 数量, 这里计算这 total 个可连接的TValue的字符总长，但是遇到不是字符串类型的可能产生中途停下来
+      // 所以，这是计算连续可连接的字串类型的长度
       for (n = 1; n < total && tostring(L, top - n - 1); n++) {
         size_t l = vslen(top - n - 1);
         if (l >= (MAX_SIZE/sizeof(char)) - tl)
@@ -503,8 +510,11 @@ void luaV_concat (lua_State *L, int total) {
         ts = luaS_createlngstrobj(L, tl);
         copy2buff(top, n, getstr(ts));
       }
+      // 能到这里，n应该是>=2的，因为上面的for循环至少能过一轮，不能过一轮的情况已经在上面的if系列过滤掉了, 所以只要在上面的for过一轮n就会被++
+      // 所以这里把已经合并的n个TValue放到 top - n
       setsvalue2s(L, top - n, ts);  /* create result */
     }
+    // 虽然合并了n个，但是合并后算是新加了个一个，所以是n-1
     total -= n-1;  /* got 'n' strings to create 1 new */
     L->top -= n-1;  /* popped 'n' strings and pushed one */
   } while (total > 1);  /* repeat until only 1 result left */
@@ -664,10 +674,13 @@ void luaV_finishOp (lua_State *L) {
     case OP_MOD: case OP_POW:
     case OP_UNM: case OP_BNOT: case OP_LEN:
     case OP_GETTABUP: case OP_GETTABLE: case OP_SELF: {
+      // 这些算术操作产生中断，一般是发生了元方法调用，到了这里已经恢复完成，元方法也已经产生返回值被放在top-1的位置
+      // 所以只需要简单的移动top指针-1，并把其值扔寄存器A去
       setobjs2s(L, base + GETARG_A(inst), --L->top);
       break;
     }
     case OP_LE: case OP_LT: case OP_EQ: {
+      // 在进行这些比较操作的时候，可能产生了元方法中断，到了这里说明元方法已经继续完成了，结果被保存在L->top-1
       int res = !l_isfalse(L->top - 1);
       L->top--;
       if (ci->callstatus & CIST_LEQ) {  /* "<=" using "<" instead? */
@@ -675,31 +688,45 @@ void luaV_finishOp (lua_State *L) {
         ci->callstatus ^= CIST_LEQ;  /* clear mark */
         res = !res;  /* negate result */
       }
+      // 这些OP是if语句里的，伴随着跳转在后紧跟 
       lua_assert(GET_OPCODE(*ci->u.l.savedpc) == OP_JMP);
+      // 返回值和寄存器A的不一样，然后跳过跳转指令
       if (res != GETARG_A(inst))  /* condition failed? */
         ci->u.l.savedpc++;  /* skip jump instruction */
       break;
     }
-    case OP_CONCAT: {
-      StkId top = L->top - 1;  /* top when 'luaT_trybinTM' was called */
+    case OP_CONCAT: { 
+      // inst指令里， 把寄存器B到C之间的连成字符串放到寄存器A
+      // top 这个时候应该放的是在发生中断的时候的top,因为到了这里，说明中断已经继续成功了，所以这个时候这里应该放的当时调用TM方法本来应该有的返回值
+      // 当时应该正在进行 top-1 和 top-2 的合并，然后这两个的合并引起了他们之间的TM方法调用被放在了top的位置上
+      StkId top = L->top - 1;  /* top when 'luaT_trybinTM' was called */ 
       int b = GETARG_B(inst);      /* first element to concatenate */
-      int total = cast_int(top - 1 - (base + b));  /* yet to concatenate */
+      // 当时如果合并完成的话，结果应该被放在top-2，栈顶指针会被响应收到top-1
+      // 所以这是计算目前剩下还有多少要concat的
+      int total = cast_int(top - 1 - (base + b));  /* yet to concatenate */ 
+      // 把TM方法的返回值放到 top-2, 这个返回值应该是 top-1 和 top-2 合并的结果
       setobj2s(L, top - 2, top);  /* put TM result in proper position */
       if (total > 1) {  /* are there elements to concat? */
+        // 如果还剩超过1个没有合并，重设栈顶指针后继续下去
         L->top = top - 1;  /* top is one after last element (at top-2) */
         luaV_concat(L, total);  /* concat them (may yield again) */
       }
+      // 到这里的话，这个时候的top指针应该是 b+1, L->top-1就应该是第一个元素所在的位置，也是所有元素合并完后的结果所在位置
       /* move final result to final position */
+      // 把这个结果放到寄存器A
       setobj2s(L, ci->u.l.base + GETARG_A(inst), L->top - 1);
       L->top = ci->top;  /* restore top */
       break;
     }
     case OP_TFORCALL: {
+      // 进行 OP_TFORCALL 后紧接着 OP_TFORLOOP
+      // 在 vmcase(OP_TFORCALL) 里有个 luaD_call 操作要去拿下一个操作数，可能发生中断，这样的话就需要修正top，因为可能产生了多个返回值
       lua_assert(GET_OPCODE(*ci->u.l.savedpc) == OP_TFORLOOP);
       L->top = ci->top;  /* correct top */
       break;
     }
     case OP_CALL: {
+      // 进行 OP_CALL 时中断，到这里已经恢复完成，如果不止一个返回值，需要把当前top调整为函数栈的top，下一步操作可能需要返回值们
       if (GETARG_C(inst) - 1 >= 0)  /* nresults >= 0? */
         L->top = ci->top;  /* adjust results */
       break;
@@ -734,8 +761,10 @@ void luaV_finishOp (lua_State *L) {
 	ISK(GETARG_C(i)) ? k+INDEXK(GETARG_C(i)) : base+GETARG_C(i))
 
 
+// 参数 e 用来实现 donextjump，让donextjump调用本dojump的同时，帮ta多跳一个指令
 /* execute a jump instruction */
 #define dojump(ci,i,e) \
+  // 这个a用来判断是否需要调用luaF_close, Q?Q 不明白跟跳转有撒关系
   { int a = GETARG_A(i); \
     if (a != 0) luaF_close(L, ci->u.l.base + a - 1); \
     ci->u.l.savedpc += GETARG_sBx(i) + e; }
@@ -755,8 +784,11 @@ void luaV_finishOp (lua_State *L) {
 /* fetch an instruction and prepare its execution */
 #define vmfetch()	{ \
   i = *(ci->u.l.savedpc++); \
+  // 检查是否存在LUA_MASKLINE和LUA_MASKCOUNT类型的hook
   if (L->hookmask & (LUA_MASKLINE | LUA_MASKCOUNT)) \
     Protect(luaG_traceexec(L)); \
+  // StkId ra = RA(i); 获得A参数的TValue
+  // RA从i中取出argA部分，这个值是一个相对base(函数数据栈底)的相对偏移量
   ra = RA(i); /* WARNING: any stack reallocation invalidates 'ra' */ \
   lua_assert(base == ci->u.l.base); \
   lua_assert(base <= L->top && L->top < L->stack + L->stacksize); \
@@ -788,7 +820,7 @@ void luaV_execute (lua_State *L) {
   LClosure *cl;
   TValue *k;
   StkId base;
-  ci->callstatus |= CIST_FRESH;  /* fresh invocation of 'luaV_execute" */
+  ci->callstatus |= CIST_FRESH;  /* fresh invocation of 'luaV_execute" */ // 更新调用栈状态
  newframe:  /* reentry point when frame changes (call/return) */
   lua_assert(ci == L->ci);
   cl = clLvalue(ci->func);  /* local reference to function's closure */
@@ -804,42 +836,43 @@ void luaV_execute (lua_State *L) {
         setobjs2s(L, ra, RB(i));
         vmbreak;
       }
-      vmcase(OP_LOADK) {
+      vmcase(OP_LOADK) { // 把常量表中的Bx参数索引的常量加载到A寄存器中。
         TValue *rb = k + GETARG_Bx(i);
         setobj2s(L, ra, rb);
         vmbreak;
       }
-      vmcase(OP_LOADKX) {
+      vmcase(OP_LOADKX) { // 下一条instruction一定是一个OP_EXTRAARG, 也就是说除了6个bit用来记录opcode类型，剩下的26位都用来表示在常量表里的索引
         TValue *rb;
         lua_assert(GET_OPCODE(*ci->u.l.savedpc) == OP_EXTRAARG);
         rb = k + GETARG_Ax(*ci->u.l.savedpc++);
         setobj2s(L, ra, rb);
         vmbreak;
       }
+      // OP_LOADBOOL 和 OP_LOADNIL 通过指令直接赋值，无须从常量表里读取, 但都承担了其他的作用
       vmcase(OP_LOADBOOL) {
         setbvalue(ra, GETARG_B(i));
-        if (GETARG_C(i)) ci->u.l.savedpc++;  /* skip next instruction (if C) */
+        if (GETARG_C(i)) ci->u.l.savedpc++;  /* skip next instruction (if C) */ // 如果C，则跳过下条指令
         vmbreak;
       }
       vmcase(OP_LOADNIL) {
         int b = GETARG_B(i);
-        do {
+        do {    // 可根据B参数连续设置多个寄存器为nil
           setnilvalue(ra++);
         } while (b--);
         vmbreak;
       }
-      vmcase(OP_GETUPVAL) {
+      vmcase(OP_GETUPVAL) { // R(A) = UpValue[B] 
         int b = GETARG_B(i);
         setobj2s(L, ra, cl->upvals[b]->v);
         vmbreak;
       }
-      vmcase(OP_GETTABUP) {
+      vmcase(OP_GETTABUP) { // table 是 upvalue[B], key 在C，value则是A所指
         TValue *upval = cl->upvals[GETARG_B(i)]->v;
         TValue *rc = RKC(i);
         gettableProtected(L, upval, rc, ra);
         vmbreak;
       }
-      vmcase(OP_GETTABLE) {
+      vmcase(OP_GETTABLE) { // 和上面相比，上面的在upvalue里取表，这个在B里取表
         StkId rb = RB(i);
         TValue *rc = RKC(i);
         gettableProtected(L, rb, rc, ra);
@@ -864,7 +897,7 @@ void luaV_execute (lua_State *L) {
         settableProtected(L, ra, rb, rc);
         vmbreak;
       }
-      vmcase(OP_NEWTABLE) {
+      vmcase(OP_NEWTABLE) { // R(A) := {} (size = B,C)
         int b = GETARG_B(i);
         int c = GETARG_C(i);
         Table *t = luaH_new(L);
@@ -874,7 +907,7 @@ void luaV_execute (lua_State *L) {
         checkGC(L, ra + 1);
         vmbreak;
       }
-      vmcase(OP_SELF) {
+      vmcase(OP_SELF) { // 为了支持self语法糖操作, 大致过程就是 RB 应该是个Table，先把这个Table放到A+1，然后R(B)[RK(C)]是个函数，被放到A
         const TValue *aux;
         StkId rb = RB(i);
         TValue *rc = RKC(i);
@@ -1069,9 +1102,12 @@ void luaV_execute (lua_State *L) {
         int c = GETARG_C(i);
         StkId rb;
         L->top = base + c + 1;  /* mark the end of concat operands */
+        // 从栈顶向下连续c - b + 1个TValue被合并，然后放到栈顶, 也就是b的栈顶位置
         Protect(luaV_concat(L, c - b + 1));
+        // 恢复ra寄存器和rb寄存器，因为上面的luaV_concat可能会调用metatable函数导致栈被移动
         ra = RA(i);  /* 'luaV_concat' may invoke TMs and move the stack */
         rb = base + b;
+        // R(C) 到 R(B) 之间的TValue被当做字串合并完了放到R(B), 这里就把这个值赋值给R(A)
         setobjs2s(L, ra, rb);
         checkGC(L, (ra >= rb ? ra + 1 : rb));
         L->top = ci->top;  /* restore top */
@@ -1085,10 +1121,11 @@ void luaV_execute (lua_State *L) {
         TValue *rb = RKB(i);
         TValue *rc = RKC(i);
         Protect(
+          // 这个时候的 GETARG_A(i) 的值是0或者1，这样设计可能为了取反操作吧
           if (luaV_equalobj(L, rb, rc) != GETARG_A(i))
-            ci->u.l.savedpc++;
+            ci->u.l.savedpc++; // 这个下次再执行的时候，就跳过了这条指令就开始执行代码了
           else
-            donextjump(ci);
+            donextjump(ci); // 读取下一条指令，下一条指令肯定是OP_JMP
         )
         vmbreak;
       }
@@ -1110,7 +1147,7 @@ void luaV_execute (lua_State *L) {
         )
         vmbreak;
       }
-      vmcase(OP_TEST) {
+      vmcase(OP_TEST) { 
         if (GETARG_C(i) ? l_isfalse(ra) : !l_isfalse(ra))
             ci->u.l.savedpc++;
           else
@@ -1129,14 +1166,15 @@ void luaV_execute (lua_State *L) {
       }
       vmcase(OP_CALL) {
         int b = GETARG_B(i);
-        int nresults = GETARG_C(i) - 1;
-        if (b != 0) L->top = ra+b;  /* else previous instruction set top */
+        int nresults = GETARG_C(i) - 1; // C 为0时，返回值是变长的，数量不可预期
+        if (b != 0) L->top = ra+b;  /* else previous instruction set top */ // B大于0，参数个数是B-1，要临时调整栈顶指针，以满足luaD_precall调用要求
         if (luaD_precall(L, ra, nresults)) {  /* C function? */
           if (nresults >= 0)
             L->top = ci->top;  /* adjust results */
           Protect((void)0);  /* update 'base' */
         }
         else {  /* Lua function */
+          // 前面的luaD_precall已经准备好了CallInfo结构，所以直接goto，设置状态为 CIST_REENTRY 表示本次调用为lua自己驱动的
           ci = L->ci;
           goto newframe;  /* restart luaV_execute over new Lua function */
         }
@@ -1147,6 +1185,7 @@ void luaV_execute (lua_State *L) {
         if (b != 0) L->top = ra+b;  /* else previous instruction set top */
         lua_assert(GETARG_C(i) - 1 == LUA_MULTRET);
         if (luaD_precall(L, ra, LUA_MULTRET)) {  /* C function? */
+          // 由于LUA_MULTRET在尾调用的情况下被写死为0，所以这里不用像CALL指令那样处理返回值栈帧
           Protect((void)0);  /* update 'base' */
         }
         else {
@@ -1159,6 +1198,7 @@ void luaV_execute (lua_State *L) {
           StkId lim = nci->u.l.base + getproto(nfunc)->numparams;
           int aux;
           /* close all upvalues from previous call */
+          // 关闭当前栈帧上的upvalue，本来这部应该return来完成的，但是这里发生尾调用后，为了让马上的函数复用空间，所以提前这步操作
           if (cl->p->sizep > 0) luaF_close(L, oci->u.l.base);
           /* move new frame into old one */
           for (aux = 0; nfunc + aux < lim; aux++)
@@ -1166,7 +1206,7 @@ void luaV_execute (lua_State *L) {
           oci->u.l.base = ofunc + (nci->u.l.base - nfunc);  /* correct base */
           oci->top = L->top = ofunc + (L->top - nfunc);  /* correct top */
           oci->u.l.savedpc = nci->u.l.savedpc;
-          oci->callstatus |= CIST_TAIL;  /* function was tail called */
+          oci->callstatus |= CIST_TAIL;  /* function was tail called */ // 方便钩子
           ci = L->ci = oci;  /* remove new frame */
           lua_assert(L->top == oci->u.l.base + getproto(ofunc)->maxstacksize);
           goto newframe;  /* restart luaV_execute over new Lua function */
@@ -1176,17 +1216,19 @@ void luaV_execute (lua_State *L) {
       vmcase(OP_RETURN) {
         int b = GETARG_B(i);
         if (cl->p->sizep > 0) luaF_close(L, base);
-        b = luaD_poscall(L, ci, ra, (b != 0 ? b - 1 : cast_int(L->top - ra)));
+        b = luaD_poscall(L, ci, ra, (b != 0 ? b - 1 : cast_int(L->top - ra))); // 返回0表示返回多个结果
         if (ci->callstatus & CIST_FRESH)  /* local 'ci' still from callee */
           return;  /* external invocation: return */
         else {  /* invocation via reentry: continue execution */
           ci = L->ci;
-          if (b) L->top = ci->top;
+          if (b) L->top = ci->top; // 多返回值调整top
           lua_assert(isLua(ci));
           lua_assert(GET_OPCODE(*((ci)->u.l.savedpc - 1)) == OP_CALL);
           goto newframe;  /* restart luaV_execute over new Lua function */
         }
       }
+      // 在循环开始的时候，var limit step分别处于ra ra+1 ra+2, 先用一条OP_FORPREP检查它们的有效性
+      // 然后跳转到循环代码块的尾部的OP_FORLOOP指令上，检查结束条件，如果结束条件成立再循环整个过程
       vmcase(OP_FORLOOP) {
         if (ttisinteger(ra)) {  /* integer loop? */
           lua_Integer step = ivalue(ra + 2);
@@ -1211,7 +1253,7 @@ void luaV_execute (lua_State *L) {
         }
         vmbreak;
       }
-      vmcase(OP_FORPREP) {
+      vmcase(OP_FORPREP) { // 这条指令一般在OP_FORLOOP之前，用于转换统一var, step, limit为interger还是number
         TValue *init = ra;
         TValue *plimit = ra + 1;
         TValue *pstep = ra + 2;
@@ -1222,7 +1264,7 @@ void luaV_execute (lua_State *L) {
           /* all values are integer */
           lua_Integer initv = (stopnow ? 0 : ivalue(init));
           setivalue(plimit, ilimit);
-          setivalue(init, intop(-, initv, ivalue(pstep)));
+          setivalue(init, intop(-, initv, ivalue(pstep))); // 由于OP_FORLOOP都是先检查，满足再进入block。由于OP_FORLOOP每次检查前都 var + step, 所以这里预先 var - step
         }
         else {  /* try making all values floats */
           lua_Number ninit; lua_Number nlimit; lua_Number nstep;
@@ -1247,7 +1289,7 @@ void luaV_execute (lua_State *L) {
         L->top = cb + 3;  /* func. + 2 args (state and index) */
         Protect(luaD_call(L, cb, GETARG_C(i)));
         L->top = ci->top;
-        i = *(ci->u.l.savedpc++);  /* go to next instruction */
+        i = *(ci->u.l.savedpc++);  /* go to next instruction */ // 下一条指令是 OP_TFORLOOP, 由于结尾采用goto进行优化，所以把下一条直接跳过
         ra = RA(i);
         lua_assert(GET_OPCODE(i) == OP_TFORLOOP);
         goto l_tforloop;
