@@ -59,9 +59,9 @@
 
 #define hashpow2(t,n)		(gnode(t, lmod((n), sizenode(t))))
 
-#define hashstr(t,str)		hashpow2(t, (str)->hash)
-#define hashboolean(t,p)	hashpow2(t, p)
-#define hashint(t,i)		hashpow2(t, i)
+#define hashstr(t,str)		hashpow2(t, (str)->hash)    // 用字符串的hash值去对table里的hash表的size做取摸运算
+#define hashboolean(t,p)	hashpow2(t, p)              // 用0或者1去对 t.hashsize 取模咯
+#define hashint(t,i)		hashpow2(t, i)                // int 值对 t.hashsize 取模
 
 
 /*
@@ -97,18 +97,26 @@ static const Node dummynode_ = {
 ** to INT_MAX. Next, the use of 'unsigned int' avoids overflows when
 ** adding 'i'; the use of '~u' (instead of '-u') avoids problems with
 ** INT_MIN.
+** 本函数用于对浮点数求hash
+** 主要计算过程可以描述为(有细微的处理):
+**         n = frexp(n, &i); return (n * INT_MAX) + i; 
+** frexp的返回值的绝对值区间是[0.5,1), 所以frexp * -INT_MIN <= INT_MAX, 紧接着的使用 uint 来相加避免了溢出
+** 通过使用 ~u 而不是直接 -u 取负，避免了 INT_MIN 的问题:
+**     当某个uint是1...(31个0),那这个数是2147483648，已经超过了INT_MAX(2147483647), 如果采用 -u, 会取反加1，那么二进制就变成了 0...(31个1) ---> 1...(31个0)，再变成int之后就成了 INT_MIN
+**     如果采用取反的话，返回的int必定是一个小于等于 INT_MAX 的正整数
 */
 #if !defined(l_hashfloat)
 static int l_hashfloat (lua_Number n) {
   int i;
   lua_Integer ni;
+  // frexp 把一个浮点数分解为尾数和指数, 传入的第一参数是被分解的数n，第二个参数是指数i，返回值是浮点尾数ret。 n = ret*2^i
   n = l_mathop(frexp)(n, &i) * -cast_num(INT_MIN);
   if (!lua_numbertointeger(n, &ni)) {  /* is 'n' inf/-inf/NaN? */
     lua_assert(luai_numisnan(n) || l_mathop(fabs)(n) == cast_num(HUGE_VAL));
     return 0;
   }
-  else {  /* normal case */
-    unsigned int u = cast(unsigned int, i) + cast(unsigned int, ni);
+  else {  /* normal case */ // 上面的lua_numbertointeger返回1，表示n已经被round取整到了int
+    unsigned int u = cast(unsigned int, i) + cast(unsigned int, ni); // 把之前分解出的指数和后面被转后的整数求和
     return cast_int(u <= cast(unsigned int, INT_MAX) ? u : ~u);
   }
 }
@@ -128,13 +136,13 @@ static Node *mainposition (const Table *t, const TValue *key) {
     case LUA_TSHRSTR:
       return hashstr(t, tsvalue(key));
     case LUA_TLNGSTR:
-      return hashpow2(t, luaS_hashlongstr(tsvalue(key)));
+      return hashpow2(t, luaS_hashlongstr(tsvalue(key)));  // 长字符串采用luaS_hashlongstr做惰性计算
     case LUA_TBOOLEAN:
       return hashboolean(t, bvalue(key));
     case LUA_TLIGHTUSERDATA:
-      return hashpointer(t, pvalue(key));
+      return hashpointer(t, pvalue(key)); // 把指针转成一个unit，然后对table的size做mod运算
     case LUA_TLCF:
-      return hashpointer(t, fvalue(key));
+      return hashpointer(t, fvalue(key)); // 同上，不过是把函数指针转 unit
     default:
       lua_assert(!ttisdeadkey(key));
       return hashpointer(t, gcvalue(key));
@@ -406,6 +414,11 @@ static void rehash (lua_State *L, Table *t, const TValue *ek) {
 */
 
 
+// 一个table最多由三块连续内存构成
+//     1. 存放了连续整数索引的数组
+//     2. 一块大小为2的整数次幂的哈希表
+//     3. Table 结构
+
 Table *luaH_new (lua_State *L) {
   GCObject *o = luaC_newobj(L, LUA_TTABLE, sizeof(Table));
   Table *t = gco2t(o);
@@ -429,7 +442,7 @@ void luaH_free (lua_State *L, Table *t) {
 
 
 static Node *getfreepos (Table *t) {
-  while (t->lastfree > t->node) {
+  while (t->lastfree > t->node) { // 依次从尾向头检查，lastfree 在数组末尾，t->node是数组头
     t->lastfree--;
     if (ttisnil(gkey(t->lastfree)))
       return t->lastfree;
@@ -441,6 +454,7 @@ static Node *getfreepos (Table *t) {
 
 /*
 ** inserts a new key into a hash table; first, check whether key's main
+** 插入一个新的key到hash表里, 首先检查key的主位置是否为空。如果不为空
 ** position is free. If not, check whether colliding node is in its main
 ** position or not: if it is not, move colliding node to an empty place and
 ** put new key in its main position; otherwise (colliding node is in its main
@@ -449,7 +463,9 @@ static Node *getfreepos (Table *t) {
 TValue *luaH_newkey (lua_State *L, Table *t, const TValue *key) {
   Node *mp;
   TValue aux;
+  // 检查参数，保证key不为空
   if (ttisnil(key)) luaG_runerror(L, "table index is nil");
+  // 如果key是float，试着把key转成int。不能转也要保证浮点数不是NaN
   else if (ttisfloat(key)) {
     lua_Integer k;
     if (luaV_tointeger(key, &k, 0)) {  /* index is int? */
@@ -460,10 +476,10 @@ TValue *luaH_newkey (lua_State *L, Table *t, const TValue *key) {
       luaG_runerror(L, "table index is NaN");
   }
   mp = mainposition(t, key);
-  if (!ttisnil(gval(mp)) || isdummy(mp)) {  /* main position is taken? */
+  if (!ttisnil(gval(mp))/*找到的这个hash槽已经被其他占用*/ || isdummy(mp)/*是dummy表示table的hash部分size为空*/) {  /* main position is taken? */
     Node *othern;
     Node *f = getfreepos(t);  /* get a free place */
-    if (f == NULL) {  /* cannot find a free place? */
+    if (f == NULL) {  /* cannot find a free place? */ // 从lastfree尾 到 t->node头，全部都被占用了
       rehash(L, t, key);  /* grow table */
       /* whatever called 'newkey' takes care of TM cache */
       return luaH_set(L, t, key);  /* insert key into grown table */

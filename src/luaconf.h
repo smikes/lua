@@ -431,6 +431,8 @@
 ** has an exact representation as a float; MAXINTEGER may not have one,
 ** and therefore its conversion to float may have an ill-defined value.)
 */
+// n >= -2147483648.000000 && n < 2147483648.000000
+// 本宏函数判断int类型的n在合理数值范围内的情况下，把float类型的n强转成int。成功返回1，否则返回0。
 #define lua_numbertointeger(n,p) \
   ((n) >= (LUA_NUMBER)(LUA_MININTEGER) && \
    (n) < -(LUA_NUMBER)(LUA_MININTEGER) && \

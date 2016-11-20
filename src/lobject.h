@@ -550,7 +550,7 @@ typedef struct Table {
 ** 'module' operation for hashing (size is always a power of 2)
 */
 #define lmod(s,size) \
-	(check_exp((size&(size-1))==0, (cast(int, (s) & ((size)-1)))))
+	(check_exp((size&(size-1))==0 /*保证size是2的幂*/, (cast(int, (s) & ((size)-1)/*快速取模*/))))
 
 
 #define twoto(x)	(1<<(x))
