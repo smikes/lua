@@ -484,29 +484,44 @@ TValue *luaH_newkey (lua_State *L, Table *t, const TValue *key) {
       /* whatever called 'newkey' takes care of TM cache */
       return luaH_set(L, t, key);  /* insert key into grown table */
     }
-    lua_assert(!isdummy(f));
+    lua_assert(!isdummy(f)); // isdummy 属于freeplace 不足的情况之一，所以这种情况应该在上面的if里排除了
+    // 到了这一步，本来预想的位置已经被mp占了，现在用mp的key来求mod，看看mp是不是在自己的主位置，所谓主位置其实就是key对hashtable的size的求mod就是这个位置
     othern = mainposition(t, gkey(mp));
     if (othern != mp) {  /* is colliding node out of its main position? */
+      // 占用点不是mainpoint
       /* yes; move colliding node into free position */
+      // 不断先前找知道找到占用点的主位置
+      // 已经占用了的位置有一条hash链条,也就是有一串具有相同hash的节点被穿在一起，其中mp是链条中的一条，且不为mainpoint
+      // 而 othern 最初是该链中的mainpoint，下面的循环从mainpoint依次轮询，找到mp的前一个点
       while (othern + gnext(othern) != mp)  /* find previous */
         othern += gnext(othern);
+      // f是前面找到的空白点，这个时候计算f和othern的偏移，把f这个自由点串在othern后面
       gnext(othern) = cast_int(f - othern);  /* rechain to point to 'f' */
+      // 完了把占用点移到这个free点上来
       *f = *mp;  /* copy colliding node into free pos. (mp->next also goes) */
       if (gnext(mp) != 0) {
+        // 由于每个节点记录next点采用的都是相对位移，如果占用点mp的next后面还有其他节点，由于现在mp节点已经被copy到free节点了，所以此时还要修正这个free节点的next域指向
+        // 不能单纯拷贝占用点mp，由于mp占用点和free节点本身之间也是有偏移的，所以还需要在free节点的next域修正这个偏移
         gnext(f) += cast_int(mp - f);  /* correct 'next' */
+        // 完了把占用点next域指向清空，准备给key用
         gnext(mp) = 0;  /* now 'mp' is free */
       }
       setnilvalue(gval(mp));
     }
     else {  /* colliding node is in its own main position */
+      // 占用点本身就是主位置
       /* new node will go into free position */
       if (gnext(mp) != 0)
+        // (mp + gnext(mp)) - f 是mp节点后面的那个点，这个步骤就是让找到的free点的next域指向这个点
         gnext(f) = cast_int((mp + gnext(mp)) - f);  /* chain new position */
       else lua_assert(gnext(f) == 0);
+      // 让mp节点的next域指向free节点
       gnext(mp) = cast_int(f - mp);
+      // 修正一下mp指针，这个纯粹是为了让后面统一直接赋值了
       mp = f;
     }
   }
+  // 统一赋值，把key的值直接拷贝给找到的mp点
   setnodekey(L, &mp->i_key, key);
   luaC_barrierback(L, t, key);
   lua_assert(ttisnil(gval(mp)));

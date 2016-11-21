@@ -509,7 +509,7 @@ typedef union TKey {
   struct {
     // #define TValuefields	Value value_; int tt_
     TValuefields;
-    int next;  /* for chaining (offset for next node) */
+    int next;  /* for chaining (offset for next node) */ // 与本节点相连的下一节点之间的相对偏移，都是指针加上偏移直接移过去
   } nk;
   // typedef struct lua_TValue { TValuefields; } TValue;
   TValue tvk;
