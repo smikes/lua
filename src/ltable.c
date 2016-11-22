@@ -223,6 +223,9 @@ int luaH_next (lua_State *L, Table *t, StkId key) {
 */
 
 /*
+** 计算table数组部分最优的大小，nums存的是 在(2^(lg-1), l^lg], 其中0<lg<=31, 各个区段内存的键值对数量
+** pna 则是table的array部分和hash部分里用正整数做key的总数
+** 
 ** Compute the optimal size for the array part of table 't'. 'nums' is a
 ** "count array" where 'nums[i]' is the number of integers in the table
 ** between 2^(i - 1) + 1 and 2^i. 'pna' enters with the total number of
@@ -266,6 +269,9 @@ static int countint (const TValue *key, unsigned int *nums) {
 ** Count keys in array part of table 't': Fill 'nums[i]' with
 ** number of keys that will go into corresponding slice and return
 ** total number of non-nil keys.
+** 返回两个:
+**     1. nums装的是每个区间存的键值数， 比如nums[8], 存的就是键值hash区间为(2^7, 2^8]里存的键值的个数
+**     2. ause是nums里每个位置的数的求和
 */
 static unsigned int numusearray (const Table *t, unsigned int *nums) {
   int lg;
@@ -273,15 +279,18 @@ static unsigned int numusearray (const Table *t, unsigned int *nums) {
   unsigned int ause = 0;  /* summation of 'nums' */
   unsigned int i = 1;  /* count to traverse all array keys */
   /* traverse each slice */
-  for (lg = 0, ttlg = 1; lg <= MAXABITS; lg++, ttlg *= 2) {
-    unsigned int lc = 0;  /* counter */
-    unsigned int lim = ttlg;
+  for (lg = 0, ttlg = 1; lg <= MAXABITS/* = 31 */; lg++, ttlg *= 2) {
+    unsigned int lc = 0;  /* counter */ // 用于计算当前(2^(lg - 1), 2^lg]区段存了多少个键值
+    unsigned int lim = ttlg; // ttlg = 2^lg
     if (lim > t->sizearray) {
+      // 如果当前区段超过了table的size，修正lim
       lim = t->sizearray;  /* adjust upper limit */
+      // i是用来遍历整个table的array索引的，如果这里已经大于当前区段的最大值lim了，说明本区段及其后面的区段没什么好遍历的了，因为没有后面了，直接返回
       if (i > lim)
         break;  /* no more elements to count */
     }
     /* count elements in range (2^(lg - 1), 2^lg] */
+    // 数出区段 (2^(lg - 1), 2^lg] 存了多少个键值
     for (; i <= lim; i++) {
       if (!ttisnil(&t->array[i-1]))
         lc++;
@@ -296,15 +305,20 @@ static unsigned int numusearray (const Table *t, unsigned int *nums) {
 static int numusehash (const Table *t, unsigned int *nums, unsigned int *pna) {
   int totaluse = 0;  /* total number of elements */
   int ause = 0;  /* elements added to 'nums' (can go to array part) */
+  // 从尾向首，依次遍历，访问hash部分的所有的node
   int i = sizenode(t);
   while (i--) {
     Node *n = &t->node[i];
-    if (!ttisnil(gval(n))) {
+    if (!ttisnil(gval(n))) { // 如果某node存在值
+      // countint 对key做一些检查，ta的value部分被希望存在区间于 (0, MAXASIZE] 的一个uint，如果没什么问题的话，nums的对应区间位增加1，并返回1
+      // 如果node的key的键值不是一个存在于(0, MAXASIZE]的正整数，那就返回0
       ause += countint(gkey(n), nums);
+      // 即使上面返回0，nums什么也不加，这里依然会+1
       totaluse++;
     }
   }
   *pna += ause;
+  // 返回table的hash部分存的有效键值的node的数量
   return totaluse;
 }
 
@@ -395,6 +409,9 @@ static void rehash (lua_State *L, Table *t, const TValue *ek) {
   int i;
   int totaluse;
   for (i = 0; i <= MAXABITS; i++) nums[i] = 0;  /* reset counts */
+  // na 统计的是array部分和hash部分所有的键值value是uint的node数量
+  // nums 统计的在(2^(lg-1), l^lg], 其中0<lg<=31, 各个区段内键值value是uint的数量
+  // totaluse 则表示所有array和hash部分的有效node的数量，key的value部可以不是正整数
   na = numusearray(t, nums);  /* count keys in array part */
   totaluse = na;  /* all those keys are integer keys */
   totaluse += numusehash(t, nums, &na);  /* count keys in hash part */
