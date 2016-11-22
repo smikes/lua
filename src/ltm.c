@@ -46,8 +46,9 @@ void luaT_init (lua_State *L) {
     "__concat", "__call"
   };
   int i;
+  // 把这些短字符串挨个个排队弄成 TString 对象放到全局字符表里
   for (i=0; i<TM_N; i++) {
-    G(L)->tmname[i] = luaS_new(L, luaT_eventname[i]);
+    G(L)->tmname[i] = luaS_new(L, luaT_eventname[i]); // 在全局状态机里面单独用个tmname数组存下这些具有特殊作用的 TString 对象
     luaC_fix(L, obj2gco(G(L)->tmname[i]));  /* never collect these names */
   }
 }
@@ -59,8 +60,10 @@ void luaT_init (lua_State *L) {
 */
 const TValue *luaT_gettm (Table *events, TMS event, TString *ename) {
   const TValue *tm = luaH_getshortstr(events, ename);
-  lua_assert(event <= TM_EQ);
+  lua_assert(event <= TM_EQ); // 应该可以表示8个的，但是从这个assert来看，似乎只用了6个
   if (ttisnil(tm)) {  /* no tag method? */
+    // 一个table的flags是一个byte，一共有8bits，可以用来给前8个 TMS EVENT 快速反馈不存在，省的每次都要查
+    // 这里就给对应event位标记1，表示该event不存在，下次就不用查字串了
     events->flags |= cast_byte(1u<<event);  /* cache this fact */
     return NULL;
   }

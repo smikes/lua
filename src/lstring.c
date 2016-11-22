@@ -238,17 +238,20 @@ TString *luaS_newlstr (lua_State *L, const char *str, size_t l) {
 ** check hits.
 */
 TString *luaS_new (lua_State *L, const char *str) {
-  unsigned int i = point2uint(str) % STRCACHE_N;  /* hash */
+  unsigned int i = point2uint(str) % STRCACHE_N/*一共有多少个短字符串set，最好这个size是个质数*/;  /* hash */
   int j;
-  TString **p = G(L)->strcache[i];
-  for (j = 0; j < STRCACHE_M; j++) {
+  TString **p = G(L)->strcache[i]; // 这是其中index为i的set，一个set里有 STRCACHE_M 个字符串
+  for (j = 0; j < STRCACHE_M/*被定义成2*/; j++) {
+    // 在这个set里的每个字符串和目标字符串比对，如果存在一毛一样的就返回
     if (strcmp(str, getstr(p[j])) == 0)  /* hit? */
       return p[j];  /* that is it */
   }
   /* normal route */
   for (j = STRCACHE_M - 1; j > 0; j--)
+    // 新要new的字符串米有找到，然后把这个set的挨个个往后移，把最后一个抛弃，把第一个空出来
     p[j] = p[j - 1];  /* move out last element */
   /* new element is first in the list */
+  // 把新要new的字符串放在第一个的位置
   p[0] = luaS_newlstr(L, str, strlen(str));
   return p[0];
 }
