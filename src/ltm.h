@@ -50,6 +50,7 @@ typedef enum {
 
 #define fasttm(l,et,e)	gfasttm(G(l), et, e)
 
+// x 是一个用来表示lua类型的数，通过这个转换，快速把lua类型找到其对应的字符串名字，比如x=-1表示这个类型是 LUA_TNONE, 那么这里就从数组的index=0里找到其名字为"no value"
 #define ttypename(x)	luaT_typenames_[(x) + 1]
 
 LUAI_DDEC const char *const luaT_typenames_[LUA_TOTALTAGS];

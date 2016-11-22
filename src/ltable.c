@@ -153,6 +153,7 @@ static Node *mainposition (const Table *t, const TValue *key) {
 /*
 ** returns the index for 'key' if 'key' is an appropriate key to live in
 ** the array part of the table, 0 otherwise.
+** 返回一个key在数组部分的index，如果这个key是正确存在于数组部分的key的话，否则就返回0
 */
 static unsigned int arrayindex (const TValue *key) {
   if (ttisinteger(key)) {
@@ -173,40 +174,45 @@ static unsigned int findindex (lua_State *L, Table *t, StkId key) {
   unsigned int i;
   if (ttisnil(key)) return 0;  /* first iteration */
   i = arrayindex(key);
-  if (i != 0 && i <= t->sizearray)  /* is 'key' inside array part? */
+  if (i != 0 && i <= t->sizearray)  /* is 'key' inside array part? */ 
+    // 这个key存的index在数组部，返回数组索引
     return i;  /* yes; that's the index */
   else {
     int nx;
-    Node *n = mainposition(t, key);
+    Node *n = mainposition(t, key); // 先得到"讲道理"情况下mainpoint应该的槽位
     for (;;) {  /* check whether 'key' is somewhere in the chain */
       /* key may be dead already, but it is ok to use it in 'next' */
-      if (luaV_rawequalobj(gkey(n), key) ||
-            (ttisdeadkey(gkey(n)) && iscollectable(key) &&
-             deadvalue(gkey(n)) == gcvalue(key))) {
-        i = cast_int(n - gnode(t, 0));  /* key index in hash table */
+      if (luaV_rawequalobj(gkey(n), key) || // 该槽位存的东西跟key一猫一样
+            (ttisdeadkey(gkey(n)) && iscollectable(key) && deadvalue(gkey(n)) == gcvalue(key)) // 该槽位key是死的，是可回收的，并且该key的gc指针指的是一个东西
+            ) {
+        i = cast_int(n - gnode(t, 0));  /* key index in hash table */ // 当前node点指针减去table的hash表头偏移等于key在hash部的index
         /* hash elements are numbered after array ones */
-        return (i + 1) + t->sizearray;
+        return (i + 1) + t->sizearray; // hash索引值是紧接着array数组部后面编号的，加1是为了符合lua里从1开始数index？
       }
-      nx = gnext(n);
+      nx = gnext(n); // 到下一个node的偏移量，因为到这里没有返回的话说明n可能和主键同hash但是不是同一个元素
       if (nx == 0)
         luaG_runerror(L, "invalid key to 'next'");  /* key not found */
-      else n += nx;
+      else n += nx; // 同一个hash的可能有多个值，依次顺着这条链找下去，直到找到
     }
   }
 }
 
 
 int luaH_next (lua_State *L, Table *t, StkId key) {
-  unsigned int i = findindex(L, t, key);  /* find original element */
+  unsigned int i = findindex(L, t, key);  /* find original element */ // 找到key本身所在，返回0就从0开始找咯，大于t->sizearray则表示索引在hash部分
   for (; i < t->sizearray; i++) {  /* try first array part */
+    // 能进这里，表i返回的是在array数组部分，或者直接返回0，表示从头找
     if (!ttisnil(&t->array[i])) {  /* a non-nil value? */
+      // i是array部分用于内部索引，返回给lua用户层要用从1开始数数组的方式
       setivalue(key, i + 1);
+      // 把原始key对应的值拷贝到栈顶
       setobj2s(L, key+1, &t->array[i]);
       return 1;
     }
   }
   for (i -= t->sizearray; cast_int(i) < sizenode(t); i++) {  /* hash part */
     if (!ttisnil(gval(gnode(t, i)))) {  /* a non-nil value? */
+      // 老规矩，替换key，把其value放在栈上
       setobj2s(L, key, gkey(gnode(t, i)));
       setobj2s(L, key+1, gval(gnode(t, i)));
       return 1;
@@ -225,7 +231,9 @@ int luaH_next (lua_State *L, Table *t, StkId key) {
 /*
 ** 计算table数组部分最优的大小，nums存的是 在(2^(lg-1), l^lg], 其中0<lg<=31, 各个区段内存的键值对数量
 ** pna 则是table的array部分和hash部分里用正整数做key的总数
-** 
+** 返回值:
+**     返回的optimal是数组部分最优要开辟的部分
+**     pna出去的时候则返回会被存到table数组部分的键值数量，这个值可能小于进来的时候的值，中间的差额的键值会被存到hash部分 
 ** Compute the optimal size for the array part of table 't'. 'nums' is a
 ** "count array" where 'nums[i]' is the number of integers in the table
 ** between 2^(i - 1) + 1 and 2^i. 'pna' enters with the total number of
@@ -239,11 +247,15 @@ static unsigned int computesizes (unsigned int nums[], unsigned int *pna) {
   unsigned int na = 0;  /* number of elements to go to array part */
   unsigned int optimal = 0;  /* optimal size for array part */
   /* loop while keys can fill more than half of total size */
+  // twotoi = 2^i
   for (i = 0, twotoi = 1; *pna > twotoi / 2; i++, twotoi *= 2) {
     if (nums[i] > 0) {
-      a += nums[i];
+      a += nums[i]; // 在 (0, 2^i] 区间内一共堆积了多少元素
+      // 如果这些堆积的元素数量大于 2^i，必定小于2^(i+1)，也就是twotoi, 那么在当前区段的空间利用率必定大于50%
       if (a > twotoi/2) {  /* more than half elements present? */
+        // 那么最优size就是 2^(i+1)，也就是twotoi
         optimal = twotoi;  /* optimal size (till now) */
+        // 会被存到table的数组部分的元素数量
         na = a;  /* all elements up to 'optimal' will go to array part */
       }
     }
@@ -366,21 +378,26 @@ void luaH_resize (lua_State *L, Table *t, unsigned int nasize,
   unsigned int oldasize = t->sizearray;
   int oldhsize = t->lsizenode;
   Node *nold = t->node;  /* save old hash ... */
-  if (nasize > oldasize)  /* array part must grow? */
+  // 扩大table的数组部分，realloc会帮着拷贝数组，多出来的会被填nil
+  if (nasize > oldasize)  /* array part must grow? */ // 数组部分要遭到扩张
     setarrayvector(L, t, nasize);
   /* create new hash part with appropriate size */
+  // 开辟hash部分，只开辟赋nil，没有正式移动数据
   setnodevector(L, t, nhsize);
-  if (nasize < oldasize) {  /* array part must shrink? */
+  if (nasize < oldasize) {  /* array part must shrink? */ // 数组部分要遭到收缩
     t->sizearray = nasize;
     /* re-insert elements from vanishing slice */
+    // 先把多余的插入到hash部分
     for (i=nasize; i<oldasize; i++) {
       if (!ttisnil(&t->array[i]))
         luaH_setint(L, t, i + 1, &t->array[i]);
     }
     /* shrink array */
+    // 用内存API收缩数组部分长度
     luaM_reallocvector(L, t->array, oldasize, nasize, TValue);
   }
   /* re-insert elements from hash part */
+  // 把old的hash部分挨着挨着挨着新的hash部分里
   for (j = twoto(oldhsize) - 1; j >= 0; j--) {
     Node *old = nold + j;
     if (!ttisnil(gval(old))) {
@@ -390,6 +407,7 @@ void luaH_resize (lua_State *L, Table *t, unsigned int nasize,
     }
   }
   if (!isdummy(nold))
+    // 如果之前old不是一个空hash，那么释放这些数组部分
     luaM_freearray(L, nold, cast(size_t, twoto(oldhsize))); /* free old hash */
 }
 
@@ -421,7 +439,7 @@ static void rehash (lua_State *L, Table *t, const TValue *ek) {
   /* compute new size for array part */
   asize = computesizes(nums, &na);
   /* resize the table to new computed sizes */
-  luaH_resize(L, t, asize, totaluse - na);
+  luaH_resize(L, t, asize/*数组部分最优长*/, totaluse - na/*总的使用量减去会被放到数组部的长也就是hash部分最低需要的长*/);
 }
 
 
@@ -552,10 +570,13 @@ TValue *luaH_newkey (lua_State *L, Table *t, const TValue *key) {
 const TValue *luaH_getint (Table *t, lua_Integer key) {
   /* (1 <= key && key <= t->sizearray) */
   if (l_castS2U(key) - 1 < t->sizearray)
+    // 如果key-1在 [0, t->sizearray)区间内，说明存在于table的数组部分，直接从数组部分返回
     return &t->array[key - 1];
   else {
+    // 否则就存在于hash部分，先求该key的hash
     Node *n = hashint(t, key);
     for (;;) {  /* check whether 'key' is somewhere in the chain */
+      // 从同hash的node链里面找，找到再返回
       if (ttisinteger(gkey(n)) && ivalue(gkey(n)) == key)
         return gval(n);  /* that's it */
       else {
@@ -564,6 +585,7 @@ const TValue *luaH_getint (Table *t, lua_Integer key) {
         n += nx;
       }
     }
+    // 除了上面的情况外那就是没找到，返回nil
     return luaO_nilobject;
   }
 }
@@ -571,6 +593,7 @@ const TValue *luaH_getint (Table *t, lua_Integer key) {
 
 /*
 ** search function for short strings
+** 短字符串在同一state只会存在一份，所以比较段字符串的时候直接比较地址
 */
 const TValue *luaH_getshortstr (Table *t, TString *key) {
   Node *n = hashstr(t, key);
@@ -581,7 +604,7 @@ const TValue *luaH_getshortstr (Table *t, TString *key) {
       return gval(n);  /* that's it */
     else {
       int nx = gnext(n);
-      if (nx == 0)
+      if (nx == 0) // 除非产生死循环，否则肯定会到0的，这样就是遍历了整个同hash的链，然后没有找到
         return luaO_nilobject;  /* not found */
       n += nx;
     }
@@ -592,6 +615,7 @@ const TValue *luaH_getshortstr (Table *t, TString *key) {
 /*
 ** "Generic" get version. (Not that generic: not valid for integers,
 ** which may be in array part, nor for floats with integral values.)
+** 通过key从table里获取value的通用方式，通用表示除了整数和可以转换为整数的浮点数以外的key获取value的方式
 */
 static const TValue *getgeneric (Table *t, const TValue *key) {
   Node *n = mainposition(t, key);
@@ -613,6 +637,7 @@ const TValue *luaH_getstr (Table *t, TString *key) {
     return luaH_getshortstr(t, key);
   else {  /* for long strings, use generic case */
     TValue ko;
+    // getgeneric只接受TValue参数，把TString转换成TValue
     setsvalue(cast(lua_State *, NULL), &ko, key);
     return getgeneric(t, &ko);
   }
@@ -621,6 +646,7 @@ const TValue *luaH_getstr (Table *t, TString *key) {
 
 /*
 ** main search function
+** 对搜索的优化，主要是对短字符和整数(包括可以转换成整数的浮点数)的查找优化
 */
 const TValue *luaH_get (Table *t, const TValue *key) {
   switch (ttype(key)) {
@@ -643,6 +669,7 @@ const TValue *luaH_get (Table *t, const TValue *key) {
 ** beware: when using this function you probably need to check a GC
 ** barrier and invalidate the TM cache.
 */
+// 返回key的TValue*，没有就造一个
 TValue *luaH_set (lua_State *L, Table *t, const TValue *key) {
   const TValue *p = luaH_get(t, key);
   if (p != luaO_nilobject)
@@ -651,6 +678,7 @@ TValue *luaH_set (lua_State *L, Table *t, const TValue *key) {
 }
 
 
+// key是一个整数，找到后给其赋值为value
 void luaH_setint (lua_State *L, Table *t, lua_Integer key, TValue *value) {
   const TValue *p = luaH_getint(t, key);
   TValue *cell;
@@ -667,12 +695,13 @@ void luaH_setint (lua_State *L, Table *t, lua_Integer key, TValue *value) {
 
 static int unbound_search (Table *t, unsigned int j) {
   unsigned int i = j;  /* i is zero or a present index */
-  j++;
+  j++; // hash部分整数key是从1开始数的
   /* find 'i' and 'j' such that i is present and j is not */
-  while (!ttisnil(luaH_getint(t, j))) {
+  while (!ttisnil(luaH_getint(t, j))) { // 每次扩大一倍，直到上界j为nil
     i = j;
     if (j > cast(unsigned int, MAX_INT)/2) {  /* overflow? */
       /* table was built with bad purposes: resort to linear search */
+      // 上界炸了，从1开始挨个挨个轮吧。。。
       i = 1;
       while (!ttisnil(luaH_getint(t, i))) i++;
       return i - 1;
@@ -680,6 +709,7 @@ static int unbound_search (Table *t, unsigned int j) {
     j *= 2;
   }
   /* now do a binary search between them */
+  // j为二分查找的上界，i为下界，通过二分查找确定第一个不为nil的边界
   while (j - i > 1) {
     unsigned int m = (i+j)/2;
     if (ttisnil(luaH_getint(t, m))) j = m;
@@ -692,6 +722,7 @@ static int unbound_search (Table *t, unsigned int j) {
 /*
 ** Try to find a boundary in table 't'. A 'boundary' is an integer index
 ** such that t[i] is non-nil and t[i+1] is nil (and 0 if t[1] is nil).
+** 这个应该是在设想某个table都是挨个挨个排队存东西的，中间不存在为nil的node，所以对于这种表只要找到第一个为nil的node，那么ta前一个node的index就是表的长度
 */
 int luaH_getn (Table *t) {
   unsigned int j = t->sizearray;

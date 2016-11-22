@@ -24,6 +24,7 @@
 
 /*
 ** number of all possible tags (including LUA_TNONE but excluding DEADKEY)
+** 上面注释说包括 LUA_TNONE 但是不包裹 DEADKEY, 那为毛要加2，不是应该加1么。因为后面加了个prot做测试用。
 */
 #define LUA_TOTALTAGS	(LUA_TPROTO + 2)
 

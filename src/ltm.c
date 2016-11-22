@@ -24,6 +24,7 @@
 #include "lvm.h"
 
 
+// 这里把 udatatypename 单独弄出来，云风大侠猜测可能是处于严谨考虑，想让 userdata 和 lightuserdata 返回的字符串地址保存一致
 static const char udatatypename[] = "userdata";
 
 LUAI_DDEF const char *const luaT_typenames_[LUA_TOTALTAGS] = {
